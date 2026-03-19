@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "type": "command",
+        "bash": "/Users/jaylee/.copilot/hooks/tool-guardian/guard-tool.sh",
+        "cwd": ".",
+        "env": {
+          "GUARD_MODE": "block"
+        },
+        "timeoutSec": 10
+      },
+      {
+        "type": "command",
+        "bash": "/Users/jaylee/.copilot/hooks/uv-enforcer/uv-enforcer.sh",
+        "cwd": ".",
+        "timeoutSec": 10
+      }
+    ]
+  }
+}
