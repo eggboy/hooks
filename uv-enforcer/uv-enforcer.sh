@@ -56,23 +56,25 @@ shopt -s nocasematch
 VIOLATIONS=()
 
 PIP_RE='(^|[;&| ])pip3? install'
-if [[ "$CMD" =~ $PIP_RE ]]; then
+UV_PIP='uv pip'
+if [[ "$CMD" =~ $PIP_RE ]] && [[ ! "$CMD" =~ $UV_PIP ]]; then
   VIOLATIONS+=("Use 'uv add <package>' instead of 'pip install'")
 fi
 
 PIPU_RE='(^|[;&| ])pip3? uninstall'
-if [[ "$CMD" =~ $PIPU_RE ]]; then
+if [[ "$CMD" =~ $PIPU_RE ]] && [[ ! "$CMD" =~ $UV_PIP ]]; then
   VIOLATIONS+=("Use 'uv remove <package>' instead of 'pip uninstall'")
 fi
 
-PY_RE='(^|[;&| ])python3? '
+PY_RE='(^|[;& ])python3? '
 UV_PY='uv run python'
-if [[ "$CMD" =~ $PY_RE ]] && [[ ! "$CMD" =~ $UV_PY ]]; then
+PIPE_PY='\| *python3? '
+if [[ "$CMD" =~ $PY_RE ]] && [[ ! "$CMD" =~ $UV_PY ]] && [[ ! "$CMD" =~ $PIPE_PY ]]; then
   VIOLATIONS+=("Use 'uv run python ...' instead of bare 'python'")
 fi
 
 PT_RE='(^|[;&| ])pytest'
-UV_PT='uv run pytest'
+UV_PT='uv run (python -m )?pytest'
 if [[ "$CMD" =~ $PT_RE ]] && [[ ! "$CMD" =~ $UV_PT ]]; then
   VIOLATIONS+=("Use 'uv run pytest' instead of bare 'pytest'")
 fi

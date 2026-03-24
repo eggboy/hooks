@@ -47,6 +47,24 @@ fi
 COMBINED="${TOOL_NAME} ${TOOL_INPUT}"
 
 # ---------------------------------------------------------------------------
+# For file-authoring tools, scan only the file path — not the content body.
+# File content can contain arbitrary text (code, docs, examples) that would
+# false-positive against shell-command patterns like "del" or "rm".
+# ---------------------------------------------------------------------------
+case "$TOOL_NAME" in
+  create_file|replace_string_in_file|multi_replace_string_in_file|edit_notebook_file)
+    _FILE_PATH=""
+    if command -v jq &>/dev/null; then
+      _FILE_PATH=$(printf '%s' "$INPUT" | jq -r '.tool_input.filePath // ""' 2>/dev/null)
+    fi
+    if [[ -z "$_FILE_PATH" ]]; then
+      _FILE_PATH=$(printf '%s' "$TOOL_INPUT" | grep -oE '"filePath"\s*:\s*"[^"]*"' | head -1 | sed 's/.*"filePath"\s*:\s*"//;s/"//')
+    fi
+    COMBINED="${TOOL_NAME} ${_FILE_PATH}"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
 # Allowlist — pure bash string ops, no subprocesses
 # ---------------------------------------------------------------------------
 if [[ -n "${TOOL_GUARD_ALLOWLIST:-}" ]]; then
@@ -65,46 +83,55 @@ shopt -s nocasematch
 
 THREATS=()
 
-# Delimiter: ~ between fields (category~severity~regex~suggestion)
-PATTERNS=(
-  "destructive_file_ops~critical~rm -rf /~Use targeted rm on specific paths instead of root"
-  "destructive_file_ops~critical~rm -rf ~\~~Use targeted rm on specific paths instead of home directory"
-  "destructive_file_ops~critical~rm -rf \.~Use targeted rm on specific files instead of current directory"
-  "destructive_file_ops~critical~rm -rf \.\.~Never remove parent directories recursively"
-  "destructive_file_ops~critical~(rm|del|unlink).*\.env~Use mv to back up .env files before removing"
-  "destructive_file_ops~critical~(rm|del|unlink).*\.git[^i]~Never delete .git directory — use git commands"
-  "destructive_file_ops~critical~find .* -delete~Do not use find -delete for bulk removal"
-  "destructive_file_ops~critical~find .* -exec .* rm~Do not use find -exec for bulk removal"
-  "destructive_file_ops~critical~xargs .* rm~Do not pipe into xargs rm for bulk removal"
-  "destructive_file_ops~critical~shutil\.rmtree~Do not use shutil.rmtree to bypass guards"
-  "destructive_file_ops~critical~os\.(remove|unlink|rmdir)~Do not use os removal functions to bypass guards"
-  "destructive_file_ops~critical~pathlib.*(unlink|rmdir)~Do not use pathlib deletion to bypass guards"
-  "destructive_file_ops~critical~python.*-c.*(remove|unlink|rmtree)~Do not invoke python one-liners to bypass guards"
-  "destructive_file_ops~critical~perl.*-e.*(unlink|rmdir)~Do not invoke perl one-liners to bypass guards"
-  "destructive_file_ops~critical~node.*-e.*fs\.(rm|unlink)~Do not invoke node one-liners to bypass guards"
-  "destructive_git_ops~critical~git push --force.*(main|master)~Use git push --force-with-lease or push to a feature branch"
-  "destructive_git_ops~critical~git push -f.*(main|master)~Use git push --force-with-lease or push to a feature branch"
-  "destructive_git_ops~high~git reset --hard~Use git stash to preserve changes, or git reset --soft"
-  "destructive_git_ops~high~git clean -fd~Use git clean -n (dry run) first to preview deletions"
-  "database_destruction~critical~DROP TABLE~Use ALTER TABLE or create a migration with rollback support"
-  "database_destruction~critical~DROP DATABASE~Create a backup first; consider revoking DROP privileges"
-  "database_destruction~critical~TRUNCATE~Use DELETE FROM ... WHERE with a condition for safer removal"
-  "database_destruction~high~DELETE FROM [a-zA-Z_]+ *;~Add a WHERE clause to DELETE FROM to avoid deleting all rows"
-  "permission_abuse~high~chmod 777~Use chmod 755 for directories or chmod 644 for files"
-  "permission_abuse~high~chmod -R 777~Use specific permissions (chmod -R 755) and limit scope"
-  "network_exfiltration~critical~curl.*\|.*bash~Download the script first, review it, then execute"
-  "network_exfiltration~critical~wget.*\|.*sh~Download the script first, review it, then execute"
-  "network_exfiltration~high~curl.*--data.*@~Review what data is being sent before using curl --data @file"
-  "system_danger~high~sudo ~Avoid sudo — run commands with the least privilege needed"
-  "system_danger~high~npm publish~Use npm publish --dry-run first to verify package contents"
-)
-
-for entry in "${PATTERNS[@]}"; do
-  IFS='~' read -r category severity regex suggestion <<< "$entry"
+# Tab-delimited threat patterns: CATEGORY	SEVERITY	REGEX	SUGGESTION	[EXCLUDE]
+# Single-quoted heredoc (<<'RULES') prevents bash escape processing — regex is literal.
+# Tab delimiter chosen because literal tabs never appear in regex syntax.
+# Optional 5th column: exclusion regex — if COMBINED matches this, skip the threat.
+while IFS=$'\t' read -r category severity regex suggestion exclude; do
+  [[ -z "$category" || "$category" == \#* ]] && continue
   if [[ "$COMBINED" =~ $regex ]]; then
-    THREATS+=("${category}	${severity}	${BASH_REMATCH[0]}	${suggestion}")
+    _match="${BASH_REMATCH[0]}"
+    [[ -n "${exclude:-}" && "$COMBINED" =~ $exclude ]] && continue
+    THREATS+=("${category}	${severity}	${_match}	${suggestion}")
   fi
-done
+done <<'RULES'
+# --- Destructive file operations ---
+destructive_file_ops	critical	rm -rf /($|[" ;&|])	Use targeted rm on specific paths instead of root
+destructive_file_ops	critical	rm -rf ~	Use targeted rm on specific paths instead of home directory
+destructive_file_ops	critical	rm -rf \.($|[" ;&|])	Use targeted rm on specific files instead of current directory
+destructive_file_ops	critical	rm -rf \.\.($|[" ;&|])	Never remove parent directories recursively
+destructive_file_ops	critical	(^|[ ;|&"])(rm|del|unlink) .*\.env	Use mv to back up .env files before removing
+destructive_file_ops	critical	(^|[ ;|&"])(rm|del|unlink) .*\.git([^i]|$)	Never delete .git directory — use git commands
+destructive_file_ops	critical	find .* -delete	Do not use find -delete for bulk removal
+destructive_file_ops	critical	find .* -exec.*rm	Do not use find -exec for bulk removal
+destructive_file_ops	critical	xargs.*rm	Do not pipe into xargs rm for bulk removal
+destructive_file_ops	critical	shutil\.rmtree	Do not use shutil.rmtree to bypass guards
+destructive_file_ops	critical	os\.(remove|unlink|rmdir)	Do not use os removal functions to bypass guards
+destructive_file_ops	critical	pathlib.*(unlink|rmdir)	Do not use pathlib deletion to bypass guards
+destructive_file_ops	critical	python.*-c.*(remove|unlink|rmtree)	Do not invoke python one-liners to bypass guards
+destructive_file_ops	critical	perl.*-e.*(unlink|rmdir)	Do not invoke perl one-liners to bypass guards
+destructive_file_ops	critical	node.*-e.*fs\.(rm|unlink)	Do not invoke node one-liners to bypass guards
+# --- Destructive git operations ---
+destructive_git_ops	critical	git push --force.*(main|master)	Use git push --force-with-lease or push to a feature branch	--force-with-lease
+destructive_git_ops	critical	git push -f .*(main|master)	Use git push --force-with-lease or push to a feature branch	--force-with-lease
+destructive_git_ops	high	git reset --hard	Use git stash to preserve changes, or git reset --soft
+destructive_git_ops	high	git clean -fd	Use git clean -n (dry run) first to preview deletions
+# --- Database destruction ---
+database_destruction	critical	DROP TABLE	Use ALTER TABLE or create a migration with rollback support
+database_destruction	critical	DROP DATABASE	Create a backup first; consider revoking DROP privileges
+database_destruction	critical	TRUNCATE	Use DELETE FROM ... WHERE with a condition for safer removal
+database_destruction	high	DELETE FROM [a-zA-Z_]+ *;	Add a WHERE clause to DELETE FROM to avoid deleting all rows
+# --- Permission abuse ---
+permission_abuse	high	chmod 777	Use chmod 755 for directories or chmod 644 for files
+permission_abuse	high	chmod -R 777	Use specific permissions (chmod -R 755) and limit scope
+# --- Network exfiltration ---
+network_exfiltration	critical	curl.*\|.*bash	Download the script first, review it, then execute
+network_exfiltration	critical	wget.*\|.*sh	Download the script first, review it, then execute
+network_exfiltration	high	curl.*--data.*@	Review what data is being sent before using curl --data @file
+# --- System danger ---
+system_danger	high	sudo 	Avoid sudo — run commands with the least privilege needed
+system_danger	high	npm publish	Use npm publish --dry-run first to verify package contents	--dry-run
+RULES
 
 shopt -u nocasematch
 
@@ -114,9 +141,6 @@ shopt -u nocasematch
 THREAT_COUNT=${#THREATS[@]}
 
 if [[ $THREAT_COUNT -eq 0 ]]; then
-  mkdir -p "$LOG_DIR"
-  printf '{"timestamp":"%s","event":"guard_passed","mode":"%s","tool":"%s"}\n' \
-    "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$MODE" "$TOOL_NAME" >> "$LOG_DIR/guard.log"
   exit 0
 fi
 
@@ -151,8 +175,8 @@ done
 FINDINGS_JSON+="]"
 echo "" >&2
 
-printf '{"timestamp":"%s","event":"threats_detected","mode":"%s","tool":"%s","threat_count":%d,"threats":%s}\n' \
-  "$TIMESTAMP" "$MODE" "$(json_escape "$TOOL_NAME")" "$THREAT_COUNT" "$FINDINGS_JSON" >> "$LOG_FILE"
+printf '{"timestamp":"%s","event":"threats_detected","mode":"%s","tool":"%s","threat_count":%d,"threats":%s,"input":"%s"}\n' \
+  "$TIMESTAMP" "$MODE" "$(json_escape "$TOOL_NAME")" "$THREAT_COUNT" "$FINDINGS_JSON" "$(json_escape "$COMBINED")" >> "$LOG_FILE"
 
 if [[ "$MODE" == "block" ]]; then
   echo "🚫 Operation blocked: resolve the threats above or adjust TOOL_GUARD_ALLOWLIST." >&2

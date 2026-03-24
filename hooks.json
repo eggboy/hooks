@@ -16,6 +16,15 @@
         "bash": "/Users/jaylee/.copilot/hooks/uv-enforcer/uv-enforcer.sh",
         "cwd": ".",
         "timeoutSec": 10
+      },
+      {
+        "type": "command",
+        "bash": "/Users/jaylee/.copilot/hooks/doc-file-warning/doc-file-warning.sh",
+        "cwd": ".",
+        "env": {
+          "SKIP_DOC_FILE_WARNING": "false"
+        },
+        "timeoutSec": 10
       }
     ]
   }
