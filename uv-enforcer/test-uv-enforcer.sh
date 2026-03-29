@@ -19,6 +19,12 @@ PASS=0
 FAIL=0
 TOTAL=0
 
+# Ensure a pyproject.toml exists so the enforcer activates
+TMPDIR_TEST=$(mktemp -d)
+touch "$TMPDIR_TEST/pyproject.toml"
+ORIG_DIR=$(pwd)
+cd "$TMPDIR_TEST"
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -52,6 +58,13 @@ section() {
 # =============================================================================
 # SECTION 1: TRUE POSITIVES — must block (exit 2)
 # =============================================================================
+
+section "venv activation — true positives"
+
+run_test "source .venv/bin/activate"     run_in_terminal "source .venv/bin/activate"           2
+run_test ". .venv/bin/activate"           run_in_terminal ". .venv/bin/activate"                2
+run_test "source venv/bin/activate"      run_in_terminal "source venv/bin/activate"            2
+run_test "activate && pip install"       run_in_terminal "source .venv/bin/activate && pip install pytest-mock --quiet 2>&1 | tail -3" 2
 
 section "pip install — true positives"
 
@@ -90,6 +103,46 @@ run_test "ruff check"                   run_in_terminal "ruff check ."          
 run_test "ruff format"                  run_in_terminal "ruff format src/"                    2
 run_test "chain: ruff after &&"         run_in_terminal "cd /project && ruff check"           2
 
+section "bare mypy — true positives"
+
+run_test "mypy src"                     run_in_terminal "mypy src/"                           2
+run_test "mypy check file"              run_in_terminal "mypy main.py"                        2
+run_test "chain: mypy after &&"         run_in_terminal "cd /project && mypy ."               2
+
+section "bare black — true positives"
+
+run_test "black ."                      run_in_terminal "black ."                             2
+run_test "black src/"                   run_in_terminal "black src/"                          2
+
+section "bare flake8 — true positives"
+
+run_test "flake8"                       run_in_terminal "flake8"                              2
+run_test "flake8 src/"                  run_in_terminal "flake8 src/"                         2
+
+section "bare isort — true positives"
+
+run_test "isort ."                      run_in_terminal "isort ."                             2
+run_test "isort src/"                   run_in_terminal "isort src/"                          2
+
+section "bare pylint — true positives"
+
+run_test "pylint src"                   run_in_terminal "pylint src/"                         2
+run_test "pylint main.py"              run_in_terminal "pylint main.py"                      2
+
+section "bare bandit — true positives"
+
+run_test "bandit -r src"                run_in_terminal "bandit -r src/"                      2
+
+section "bare safety — true positives"
+
+run_test "safety check"                 run_in_terminal "safety check"                        2
+
+section "general pip commands — true positives"
+
+run_test "pip list"                     run_in_terminal "pip list"                            2
+run_test "pip3 show requests"           run_in_terminal "pip3 show requests"                  2
+run_test "pip freeze"                   run_in_terminal "pip freeze"                          2
+
 # =============================================================================
 # SECTION 2: FALSE POSITIVES — must allow (exit 0)
 #
@@ -126,6 +179,16 @@ section "uv run ruff (correct usage) — false positives"
 run_test "uv run ruff check"             run_in_terminal "uv run ruff check ."                 0
 run_test "uv run ruff format"            run_in_terminal "uv run ruff format src/"              0
 
+section "uv run other tools (correct usage) — false positives"
+
+run_test "uv run mypy"                   run_in_terminal "uv run mypy src/"                    0
+run_test "uv run black"                  run_in_terminal "uv run black ."                      0
+run_test "uv run flake8"                 run_in_terminal "uv run flake8"                       0
+run_test "uv run isort"                  run_in_terminal "uv run isort ."                      0
+run_test "uv run pylint"                 run_in_terminal "uv run pylint src/"                  0
+run_test "uv run bandit"                 run_in_terminal "uv run bandit -r src/"               0
+run_test "uv run safety"                 run_in_terminal "uv run safety check"                 0
+
 section "uv native commands — false positives"
 
 run_test "uv add requests"               run_in_terminal "uv add requests"                     0
@@ -155,6 +218,11 @@ section "words containing python/pip/ruff — false positives"
 run_test "cpython reference"             run_in_terminal "echo cpython is great"               0
 run_test "pipx install"                  run_in_terminal "pipx install black"                  0
 
+section "pytest-mock as pip arg — false positives"
+
+run_test "uv add pytest-mock"            run_in_terminal "uv add pytest-mock"                   0
+run_test "pip install pytest-cov (pkg)"  run_in_terminal "uv add pytest-cov"                    0
+
 section "SKIP_UV_ENFORCER — false positive"
 
 # Special test: SKIP_UV_ENFORCER=true should exit 0 even for violations
@@ -171,6 +239,24 @@ else
   echo "${RED}FAIL${RESET}  [SKIP_UV_ENFORCER=true] exit=$exit_code (expected 0)"
 fi
 
+section "no pyproject.toml — still enforces"
+
+# With pyproject.toml guard removed, violations should still be caught
+((TOTAL++))
+NO_PYPROJECT_DIR=$(mktemp -d)
+exit_code=$(cd "$NO_PYPROJECT_DIR" && printf '{"tool_name":"run_in_terminal","tool_input":{"command":"python main.py"}}' \
+  | bash "$ENFORCER" 2>/dev/null; echo $?)
+exit_code="${exit_code##*$'\n'}"
+exit_code="${exit_code// /}"
+rm -rf "$NO_PYPROJECT_DIR"
+if [[ "$exit_code" == "2" ]]; then
+  ((PASS++))
+  [[ "$VERBOSE" == "--verbose" ]] && echo "${GREEN}PASS${RESET}  [no pyproject.toml → still blocks]"
+else
+  ((FAIL++))
+  echo "${RED}FAIL${RESET}  [no pyproject.toml → still blocks] exit=$exit_code (expected 2)"
+fi
+
 # =============================================================================
 # RESULTS
 # =============================================================================
@@ -182,5 +268,7 @@ else
   echo "${RED}$FAIL FAILED${RESET} out of $TOTAL ($PASS passed)"
 fi
 echo "==========================================="
-
+# Cleanup temp dirs
+cd "$ORIG_DIR"
+rm -rf "$TMPDIR_TEST"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1

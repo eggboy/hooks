@@ -13,6 +13,12 @@ set -euo pipefail
 
 [[ "${SKIP_UV_ENFORCER:-}" == "true" ]] && exit 0
 
+# ---------------------------------------------------------------------------
+# Guard: only enforce when uv is available
+# ---------------------------------------------------------------------------
+# Skip if uv is not installed
+command -v uv &>/dev/null || exit 0
+
 INPUT=$(cat)
 
 # ---------------------------------------------------------------------------
@@ -55,6 +61,12 @@ fi
 shopt -s nocasematch
 VIOLATIONS=()
 
+# --- venv activation (anti-pattern in uv projects) ---
+ACTIVATE_RE='(^|[;&| ])(source|\.) [^ ]*activate'
+if [[ "$CMD" =~ $ACTIVATE_RE ]]; then
+  VIOLATIONS+=("Don't activate venvs manually — uv manages the environment automatically")
+fi
+
 PIP_RE='(^|[;&| ])pip3? install'
 UV_PIP='uv pip'
 if [[ "$CMD" =~ $PIP_RE ]] && [[ ! "$CMD" =~ $UV_PIP ]]; then
@@ -73,7 +85,7 @@ if [[ "$CMD" =~ $PY_RE ]] && [[ ! "$CMD" =~ $UV_PY ]] && [[ ! "$CMD" =~ $PIPE_PY
   VIOLATIONS+=("Use 'uv run python ...' instead of bare 'python'")
 fi
 
-PT_RE='(^|[;&| ])pytest'
+PT_RE='(^|[;&| ])pytest( |$|[;&|])'
 UV_PT='uv run (python -m )?pytest'
 if [[ "$CMD" =~ $PT_RE ]] && [[ ! "$CMD" =~ $UV_PT ]]; then
   VIOLATIONS+=("Use 'uv run pytest' instead of bare 'pytest'")
@@ -83,6 +95,23 @@ RF_RE='(^|[;&| ])ruff'
 UV_RF='uv run ruff'
 if [[ "$CMD" =~ $RF_RE ]] && [[ ! "$CMD" =~ $UV_RF ]]; then
   VIOLATIONS+=("Use 'uv run ruff' instead of bare 'ruff'")
+fi
+
+# --- Python dev tools (mypy, black, flake8, isort, pylint, bandit, safety) ---
+# Only match at command positions: start of line, or after ;  &  &&  ||  |
+CMD_SEP='(^|[;&|] *)'
+for _tool in mypy black flake8 isort pylint bandit safety; do
+  _re="${CMD_SEP}${_tool}"
+  _uv_re="uv run ${_tool}"
+  if [[ "$CMD" =~ $_re ]] && [[ ! "$CMD" =~ $_uv_re ]]; then
+    VIOLATIONS+=("Use 'uv run ${_tool}' instead of bare '${_tool}'")
+  fi
+done
+
+# --- general pip commands (list, show, freeze, etc.) ---
+PIPG_RE='(^|[;&| ])pip3? (list|show|freeze|check|config|debug|cache|hash|search|wheel|download)'
+if [[ "$CMD" =~ $PIPG_RE ]] && [[ ! "$CMD" =~ $UV_PIP ]]; then
+  VIOLATIONS+=("Use 'uv pip ...' instead of bare 'pip' for general pip commands")
 fi
 
 shopt -u nocasematch
